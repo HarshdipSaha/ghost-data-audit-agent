@@ -107,7 +107,7 @@ Command: `{command}`
 2. Resource or catalog mentions could be mistaken for live record reads. Document evidence now requires a visible row or state, keeps embedded fact time separate from capture availability, and rejects mentions that postdate the audit cutoff.
 3. Email or phone aliases could be recycled to another stable user. Identity discovery now checks cutoff ownership and rejects conflicting stable-user references.
 4. A clean primary table could hide a populated physical replica, and one citation could accidentally stand in for multiple copies. Replica scopes remain separate, and complete decisions retain evidence for each physical obligation.
-5. Conditional retention and tombstone policies were previously inferred from category alone. The auditor now requires the relevant supplied condition and refuses to certify missing proof.
+5. Conditional retention and redaction policies were previously inferred from category alone. The auditor now applies the deletion request as a baseline, overrides it only for a grounded policy exception, and refuses contradictory identity or state evidence.
 
 This report reflects the current run. Regenerate it after every prediction change. Any mismatch should be traced to a general parser, time, identity, coverage, policy, citation or ordering defect; no per-case prediction lookup is permitted.
 """.format(command=command, **metrics)
@@ -168,11 +168,12 @@ No complete prediction CSV was produced, so comparison with `sample_output.csv` 
 
 ## Additional team-authored evaluation cases
 
-1. `test_rejects_nonlocal_or_noncanonical_model_endpoints`: attacker-controlled hostnames, userinfo, non-HTTP schemes, paths, and queries are rejected.
-2. `test_non_boolean_direct_identifier_values_do_not_establish_attribution`: false/null-like values cannot create a false anonymization obligation.
-3. `test_false_policy_predicates_are_distinct_from_missing_proof`: explicitly disproven shared-context predicates differ from missing policy evidence.
-4. `test_document_mention_is_not_state_and_future_embedded_time_is_excluded`: later or merely mentioned resources do not become audit-time state reads.
-5. `test_complete_cites_each_physical_copy`: a replica requires its own evidence citation.
+1. `test_rejects_nonlocal_or_noncanonical_model_endpoints`: attacker-controlled hosts, userinfo, non-HTTP schemes, paths, and queries are rejected.
+2. `test_korean_explicit_account_deletion_and_negation`: explicit Korean deletion intent is recognized while negation and a request for instructions are not treated as authorization.
+3. `test_false_policy_predicates_fall_back_to_deletion`: conditional retention exceptions do not silently suppress the underlying deletion request.
+4. `test_non_boolean_direct_identifier_values_do_not_establish_attribution`: false/null-like analytics flags cannot create a false anonymization obligation.
+5. `test_current_archive_inventory_row_establishes_presence`: a current, resource-grounded archive inventory row supports presence without inventing restore capability.
+6. `test_complete_cites_each_physical_copy`: a replica requires its own evidence citation.
 
 ## Unresolved diagnostic reasons
 
@@ -184,7 +185,7 @@ Counts below are issue occurrences; one request can have multiple unresolved res
 
 ## Failures and improvements
 
-The full run left {unresolved} requests unresolved because supplied policy predicates or timely state observations were not established. The largest issue groups are shown above; missing retention intervals, ownership/context facts, or authoritative reads are kept unresolved instead of being converted into guessed statuses or remediation. Hardening added exact loopback endpoint parsing, disabled environment proxies and redirects, separated disproven policy conditions from missing evidence, enforced the 518-row contract, and required both evaluation reports before packaging. The parser, identity resolver, temporal gates, conditional-policy engine, local-only model transport, and output contract are covered by automated tests; passing those tests does not replace a sample score.
+The full run left {unresolved} requests unresolved because timely state or grounded resource evidence was missing. The largest issue groups are shown above; catalog links without a current record read and ambiguous identity ownership remain unresolved rather than being converted into guessed states. Conditional retention rules now override baseline deletion only when their predicates are supported by evidence; shared attachments are redacted when exclusive ownership is not established. Hardening added exact loopback endpoint parsing, disabled environment proxies and redirects, multilingual intent checks, enforced the 518-row contract, and required both evaluation reports before packaging. The parser, identity resolver, temporal gates, conditional-policy engine, local-only model transport, and output contract are covered by automated tests; passing those tests does not replace a sample score.
 
 Regenerate this report from the latest full-run summary after every implementation change. If unresolved audits remain, report metrics as not measured and do not package a misleading `output.csv`.
 """

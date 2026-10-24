@@ -4,7 +4,7 @@ A Python audit agent for HackerRank's Orchestrate October 2026 challenge. It rec
 
 ## Current run status
 
-The latest strict run processed all 518 requests: 200 resolved and 318 unresolved. The agent withheld `output.csv` because required policy facts or timely state evidence were missing. The 32-request sample diagnostic resolved 11 requests and left 21 unresolved, so sample accuracy is reported as not measured. No labels are guessed to force a submission file.
+The latest strict run processed all 518 requests: 514 resolved and 4 unresolved. The agent withheld `output.csv` because three resources lack a timely state read and one request has no grounded resource association. The 32-request sample diagnostic resolved 25 requests and left 7 unresolved, so sample accuracy is reported as not measured. No labels are guessed to force a submission file.
 
 ## Requirements and setup
 
@@ -40,6 +40,6 @@ python -m pytest code/tests -q
 python scripts/package.py
 ```
 
-The suite currently passes 81 tests and 34 subtests. The package script builds `code.zip` from `code/`, requires the evaluation and usage reports, and excludes environment files, credentials, caches, build output and nested archives. The generated reports are included in `code/evaluation/`.
+The suite currently passes 83 tests and 34 subtests. The package script builds `code.zip` from `code/`, requires the evaluation and usage reports, and excludes environment files, credentials, caches, build output and nested archives. The generated reports are included in `code/evaluation/`.
 
 This repository contains implementation and diagnostics only; it does not include a contest submission or claim a successful score.
