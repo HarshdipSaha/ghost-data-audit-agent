@@ -33,11 +33,12 @@ class CoreTests(unittest.TestCase):
                 'LEGAL_HOLD_RECORD':('A supplied legal hold is active','RETAIN',{'legal_hold_active':True}),
                 'ACCOUNT_TOMBSTONE':('Account is deleted and only a stable internal user_id is needed to preserve references to retained records','REDACT',{'account_status':'DELETED','subject_reference':'u','retained_references':True}),
             }
+            fallbacks={'SUPPORT_MESSAGE':'DELETE','SUPPORT_ATTACHMENT':'REDACT','ANALYTICS_PROFILE':None,'SECURITY_AUDIT_LOG':'DELETE','LEGAL_HOLD_RECORD':'DELETE','ACCOUNT_TOMBSTONE':'DELETE'}
             for category,(condition,action,fields) in conditions.items():
                 auditor.rules[category]={'condition':condition,'required_action':action}
                 o=Observation('e','s','r',category,'PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')
                 with self.subTest(category=category):
-                    self.assertIsNone(auditor._action(category,o,'2026-01-02T00:00:00Z'))
+                    self.assertEqual(auditor._action(category,o,'2026-01-02T00:00:00Z'),fallbacks[category])
                     o.fields=fields
                     self.assertEqual(auditor._action(category,o,'2026-01-02T00:00:00Z'),action)
             auditor.rules['USER_PROFILE']={'condition':'Some unknown condition','required_action':'DELETE'}
@@ -49,33 +50,36 @@ class CoreTests(unittest.TestCase):
             auditor.rules['SUPPORT_MESSAGE']={'condition':'Conversation contains shared customer, agent, or order context that must be retained','required_action':'REDACT'}
             o=Observation('e','support_platform','message_1','SUPPORT_MESSAGE','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')
             for fields,expected in (
-                ({'text':'No order context; this is a private customer message.'},'UNSPECIFIED_POLICY'),
-                ({'order_reference':'null'},None),
-                ({'text':'The agent was not involved and no order exists.'},'UNSPECIFIED_POLICY'),
+                ({'text':'No order context; this is a private customer message.'},'DELETE'),
+                ({'order_reference':'null'},'DELETE'),
+                ({'text':'The agent was not involved and no order exists.'},'DELETE'),
             ):
                 o.fields=fields
                 with self.subTest(fields=fields):self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),expected)
             o.fields={'text':'The customer and agent discussed order reference ORD-17.'}
             self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'REDACT')
             o.fields={'ticket_id':'CS-17','channel':'email','message_text':'Please send the delivery update.'}
-            self.assertIsNone(auditor._action(o.category,o,'2026-01-02T00:00:00Z'))
+            self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'DELETE')
             o.fields={'ticket_id':'CS-17','channel':'email','message_text':'The customer and agent discussed order reference ORD-17.'}
             self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'REDACT')
 
             auditor.rules['SUPPORT_ATTACHMENT']={'condition':'Attachment belongs only to the deletion subject','required_action':'DELETE'}
             attachment=Observation('e','support_platform','attachment_1','SUPPORT_ATTACHMENT','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'text':'This attachment does not belong only to the subject.'})
-            self.assertEqual(auditor._action(attachment.category,attachment,'2026-01-02T00:00:00Z'),'UNSPECIFIED_POLICY')
+            self.assertEqual(auditor._action(attachment.category,attachment,'2026-01-02T00:00:00Z'),'REDACT')
             attachment.fields={'text':'No other subject is linked to this attachment.'}
             self.assertEqual(auditor._action(attachment.category,attachment,'2026-01-02T00:00:00Z'),'DELETE')
+            attachment.state='ABSENT'
+            attachment.fields={}
+            self.assertEqual(auditor._action(attachment.category,attachment,'2026-01-02T00:00:00Z'),'DELETE')
 
-    def test_false_policy_predicates_are_distinct_from_missing_proof(self):
+    def test_false_policy_predicates_fall_back_to_deletion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.make_dataset(root,[]);auditor=Auditor(root)
             auditor.rules['SUPPORT_MESSAGE']={'condition':'Conversation contains shared customer, agent, or order context that must be retained','required_action':'REDACT'}
             message=Observation('e','support_platform','m','SUPPORT_MESSAGE','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'shared_context':False})
-            self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'UNSPECIFIED_POLICY')
+            self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'DELETE')
             message.fields={}
-            self.assertIsNone(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'))
+            self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'DELETE')
             message.fields={'shared_context':False,'order_reference':'ORD-17'}
             self.assertIsNone(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'))
 
@@ -96,6 +100,10 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(auditor._action('ANALYTICS_PROFILE',observation,'2026-01-02T00:00:00Z'),'ANONYMIZE')
             observation.fields={'direct_identifiers':'false','user_id':'u'}
             self.assertEqual(auditor._action('ANALYTICS_PROFILE',observation,'2026-01-02T00:00:00Z'),'ANONYMIZE')
+            observation.fields={'text':'Profile attributes: email old@example.com'}
+            self.assertEqual(auditor._action('ANALYTICS_PROFILE',observation,'2026-01-02T00:00:00Z'),'ANONYMIZE')
+            observation.fields={'text':'Profile attributes: email other@example.com','identity_conflict':'Visible email differs from target aliases'}
+            self.assertIsNone(auditor._action('ANALYTICS_PROFILE',observation,'2026-01-02T00:00:00Z'))
 
     def test_conflicting_attachment_flags_and_text_remain_unresolved(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,6 +121,8 @@ class CoreTests(unittest.TestCase):
             tombstone=Observation('e','identity_service','t','ACCOUNT_TOMBSTONE','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{
                 'user_id':'u','account_status':'DELETED','text':'No linked records remain; no references to preserve.'
             })
+            self.assertEqual(auditor._action('ACCOUNT_TOMBSTONE',tombstone,'2026-01-02T00:00:00Z'),'DELETE')
+            tombstone.fields['order_reference']='ORD-17'
             self.assertIsNone(auditor._action('ACCOUNT_TOMBSTONE',tombstone,'2026-01-02T00:00:00Z'))
 
     def test_model_proposed_document_states_require_positive_non_negated_evidence(self):
@@ -174,6 +184,16 @@ class CoreTests(unittest.TestCase):
             reads=auditor._document_reads({'r'},'2026-01-02T00:00:00Z',None)[0]
             self.assertEqual(len(reads),1);self.assertEqual(reads[0].observed_at,'2026-01-01T10:00:00Z')
 
+    def test_current_archive_inventory_row_establishes_presence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            self.make_dataset(root,[dict(system='backup_service',resource_id='backup_1',record_type='BACKUP_ARCHIVE',subject_reference='u')])
+            auditor=Auditor(root)
+            auditor.store.documents=[{'file_id':'doc','kind':'ocr','captured_at':'2026-01-01T12:00:00Z','text':'Archives Updated moments ago\nArchive ID backup_1\nRegion eu-west-1\nArchive Path s3://backups/customer/segment.tar.zst\nFile size 20 GB\nEncryption AES-256'}]
+            reads=auditor._document_reads({'backup_1'},'2026-01-02T00:00:00Z',None)[0]
+            self.assertEqual(len(reads),1)
+            self.assertEqual((reads[0].category,reads[0].state),('BACKUP_ARCHIVE','PRESENT'))
+
     def test_complete_cites_each_physical_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.make_dataset(root,[dict(system='account_service',resource_id='r',record_type='USER_PROFILE',result='NOT_FOUND',subject_reference='old@example.com')]);auditor=Auditor(root)
@@ -193,39 +213,41 @@ class CoreTests(unittest.TestCase):
             auditor.store.documents=[dict(doc,text='PRODUCTION 01 Jan 2026 10:00 UTC\nResource catalog flow_a\nOther connectors are Continuous sync')]
             self.assertEqual(auditor._document_reads({'flow_a'},'2026-01-02T00:00:00Z',None)[0],[])
 
-    def test_expired_hold_is_disproved_not_missing_policy_evidence(self):
+    def test_expired_active_hold_conflict_stays_unresolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.make_dataset(root,[]);auditor=Auditor(root)
             auditor.rules['LEGAL_HOLD_RECORD']={'condition':'A supplied legal hold is active','required_action':'RETAIN'}
             o=Observation('e','s','r','LEGAL_HOLD_RECORD','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'legal_hold_active':True,'hold_until':'2026-01-01T01:00:00Z'})
-            self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'UNSPECIFIED_POLICY')
+            self.assertIsNone(auditor._action(o.category,o,'2026-01-02T00:00:00Z'))
+            o.fields={'legal_hold_active':False}
+            self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'DELETE')
 
-    def test_expired_security_retention_is_distinct_from_missing_interval(self):
+    def test_security_records_without_active_retention_fall_back_to_deletion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.make_dataset(root,[]);auditor=Auditor(root)
             auditor.rules['SECURITY_AUDIT_LOG']={'condition':'Record is within the supplied retention period','required_action':'RETAIN'}
             observation=Observation('e','security_service','s','SECURITY_AUDIT_LOG','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'retention_until':'2026-01-01T01:00:00Z'})
-            self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'UNSPECIFIED_POLICY')
+            self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'DELETE')
             observation.fields={}
-            self.assertIsNone(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'))
+            self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'DELETE')
 
-    def test_false_support_predicate_without_fallback_cannot_prove_completion(self):
+    def test_false_support_predicate_uses_base_delete_treatment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
-            self.make_dataset(root,[dict(system='support_platform',resource_id='message_1',record_type='SUPPORT_MESSAGE',subject_reference='u',shared_context=False,message_text='Private message with customer details')])
+            self.make_dataset(root,[dict(system='support_platform',resource_id='message_1',record_type='SUPPORT_MESSAGE',subject_reference='u',shared_context=False,requester_email='old@example.com',message_text='Private message with customer details')])
             auditor=Auditor(root)
             auditor.rules['SUPPORT_MESSAGE']={'condition':'Conversation contains shared customer, agent, or order context that must be retained','required_action':'REDACT'}
-            with self.assertRaises(UnresolvedAudit) as caught:
-                auditor.audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-02T00:00:00Z'),True)
-            self.assertIn('fallback treatment is not supplied',str(caught.exception.details))
+            decision=auditor.audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-02T00:00:00Z'),True)
+            self.assertEqual(decision.status,'INCOMPLETE')
+            self.assertIn('DELETE_RECORD',[step['operation'] for step in decision.steps])
 
-    def test_expired_security_record_cannot_be_skipped_from_complete_audit(self):
+    def test_expired_security_record_is_deleted_without_retention_exception(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             self.make_dataset(root,[dict(system='security_service',resource_id='audit_r',record_type='SECURITY_AUDIT_LOG',subject_reference='u',retention_until='2026-01-01T01:00:00Z')])
-            with self.assertRaises(UnresolvedAudit) as caught:
-                Auditor(root).audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-02T00:00:00Z'),True)
-            self.assertIn('fallback treatment is not supplied',str(caught.exception.details))
+            decision=Auditor(root).audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-02T00:00:00Z'),True)
+            self.assertEqual(decision.status,'INCOMPLETE')
+            self.assertIn('DELETE_RECORD',[step['operation'] for step in decision.steps])
 
     def test_tombstone_cannot_use_email_as_stable_reference(self):
         fields=dict(subject_reference='old@example.com',account_status='DELETED',name=None,email=None,phone=None,email_hash=None)
@@ -281,12 +303,13 @@ class CoreTests(unittest.TestCase):
             self.assertEqual([s['operation'] for s in decision.steps],['REPORT_REMAINING_RECORD','DELETE_RECORD','VERIFY_RECORD_ABSENT'])
             self.assertEqual(Auditor(root).audit(dict(case_id='n'),False).steps,[])
 
-    def test_engine_unresolved_retained_absence(self):
+    def test_security_record_without_retention_exception_is_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             self.make_dataset(root,[dict(system='security_service',resource_id='r',record_type='SECURITY_AUDIT_LOG',result='NOT_FOUND',subject_reference='old@example.com')])
-            with self.assertRaises(UnresolvedAudit):
-                Auditor(root).audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-01T13:00:00Z'),True)
+            decision=Auditor(root).audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-01T13:00:00Z'),True)
+            self.assertEqual(decision.status,'COMPLETE')
+            self.assertEqual([step['operation'] for step in decision.steps],['VERIFY_RECORD_ABSENT'])
 
     def test_contract_order_and_future_citation(self):
         steps = compile_steps([dict(phase='VERIFICATION', system_id='s', resource_id='r', operation='VERIFY_RECORD_ABSENT', state='ABSENT', evidence_id='e')])

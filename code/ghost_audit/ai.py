@@ -386,7 +386,13 @@ def _lexical_authorization_fallback(text: str) -> bool | None:
         re.I,
     )
     japanese_request = re.search(r"\u4f9d\u983c|\u304a\u9858\u3044|\u6c42\u3081|\u304f\u3060\u3055\u3044|\u5e0c\u671b|\u3057\u305f\u3044", text)
-    return True if request_marker.search(text) or imperative.search(text) or japanese_request else None
+    korean_request = re.search(
+        r"(?:계정|프로필|개인정보|데이터|정보|기록).{0,24}(?:삭제|지우\w*|제거).{0,18}"
+        r"(?:요청|부탁|바랍니다|원합니다|싶습니다|해\s*주세요|해주세요|주시기 바랍니다)"
+        r"|(?:삭제|지우\w*|제거).{0,12}(?:해\s*주세요|해주세요|요청|부탁|바랍니다)",
+        text,
+    )
+    return True if request_marker.search(text) or imperative.search(text) or japanese_request or korean_request else None
 
 
 def _explicit_delete_quote(text: str, quote: str) -> bool | None:
@@ -401,16 +407,17 @@ def _explicit_delete_quote(text: str, quote: str) -> bool | None:
             return False
         if any(token in source for token in ("依頼", "お願い", "求め", "ください", "希望", "したい")):
             return True
-    action = r"\b(?:delet\w*|eras\w*|remov\w*|close|closed|closing|terminate\w*|elimin\w*|suppression|supprim\w*|exclus\w*|apagar|apague\w*|exclu\w*|effac\w*|borr\w*|fermer|ferm\w*|cerr\w*)\b"
+    action = r"(?:\b(?:delet\w*|eras\w*|remov\w*|close|closed|closing|terminate\w*|elimin\w*|suppression|supprim\w*|exclus\w*|apagar|apague\w*|exclu\w*|effac\w*|borr\w*|fermer|ferm\w*|cerr\w*)\b|삭제|지우\w*|제거)"
     negative = (
         rf"\b(?:do not|don't|dont|never|not|no|nunca|nao|n\u00e3o|no quiero|nao quero|n\u00e3o quero)\b"
         rf".{{0,45}}{action}"
         rf"|\bne\b.{{0,30}}\b(?:pas|jamais)\b.{{0,30}}{action}"
         rf"|\bne\b.{{0,15}}{action}.{{0,15}}\b(?:pas|jamais)\b"
+        rf"|(?:삭제|지우\w*|제거)(?:를|을)?\s*(?:하지\s*않|하지\s*마|안\s*(?:하|해)|원하지|요청하지|할\s*필요(?:가)?\s*없|싶지|취소|철회|말아)"
     )
     # The quoted action and a data/account object must be in the same sentence.
     # This blocks "remove me from marketing lists; keep this account".
-    target = r"\b(?:account|profile|personal data|personal information|my data|data|records?|identifiers?|search results?|index entries?|account deletion|deletion request|compte|profil|donn\w*|cuenta|perfil|datos|conta|dados|informa\w*|registro)\b"
+    target = r"\b(?:account|profile|personal data|personal information|my data|data|records?|identifiers?|search results?|index entries?|account deletion|deletion request|compte|profil|donn\w*|cuenta|perfil|datos|conta|dados|informa\w*|registro)\b|계정|프로필|개인정보|데이터|정보|기록"
     positive_context = False
     negative_context = False
     for sentence in re.split(r"[.!?;\n]+", source):

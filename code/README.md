@@ -36,7 +36,9 @@ To run the public reference requests independently, use `python code/main.py --r
 4. `ghost_audit.engine.Auditor` constructs policy obligations, detects remaining data and active recreation paths, keeps primary and replica states separate, and returns an explicit unresolved diagnostic when required proof is missing.
 5. `ghost_audit.contract` checks the official operation order and exact CSV schema before writing.
 
-Evidence must be available by `audit_at` and describe a state no later than that cutoff. A successful delete command is not proof of absence. A cache miss, absent search snippet, filename match, or unscoped empty list is not absence evidence. Primary absence does not erase a dirty replica. The supplied rules determine retention and deletion treatment.
+Evidence must be available by `audit_at` and describe a state no later than that cutoff. A successful delete command is not proof of absence. A cache miss, absent search snippet, filename match, or unscoped empty list is not absence evidence. Primary absence does not erase a dirty replica.
+
+An authorized deletion request supplies the baseline `DELETE` treatment. A conditional rule overrides that baseline only when its predicate is grounded: active retention or legal hold preserves the record; shared support context is redacted; a tombstone is redacted only when a stable reference must remain for retained records. If an attachment is shared or exclusivity is not established, the agent plans redaction so another subject's file is not deleted. Contradictory facts and ambiguous identity remain unresolved. Explicitly non-attributable analytics records with no concrete subject identifiers create no deletion obligation.
 
 ## Evaluation
 

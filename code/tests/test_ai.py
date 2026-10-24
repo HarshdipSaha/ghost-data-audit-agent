@@ -7,7 +7,7 @@ import urllib.request
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ghost_audit.ai import LocalSemanticAgent, SemanticError, _NoRedirect
+from ghost_audit.ai import LocalSemanticAgent, SemanticError, _NoRedirect, _authorization_decision, _lexical_authorization_fallback
 
 
 def transport(response):
@@ -23,6 +23,17 @@ def test_intent_uses_model_and_content_cache(tmp_path):
     assert agent.usage["model_calls"] == 1
     assert agent.usage["cache_hits"] == 1
     assert agent.usage["input_tokens"] == 31
+
+
+def test_korean_explicit_account_deletion_and_negation():
+    positive = "이 이메일 주소에 연결된 계정의 영구 삭제를 요청합니다."
+    negative = "계정 삭제를 요청하지 않습니다. 프로필은 유지해 주세요."
+    ambiguous = "계정 삭제 방법을 알려 주세요."
+    assert _lexical_authorization_fallback(positive) is True
+    assert _authorization_decision(positive, positive, False) is True
+    assert _lexical_authorization_fallback(negative) is False
+    assert _authorization_decision(negative, negative, True) is False
+    assert _lexical_authorization_fallback(ambiguous) is None
 
 
 def test_rejects_non_boolean_authorization(tmp_path):

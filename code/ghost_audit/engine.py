@@ -18,7 +18,6 @@ ACTION_STEPS={
     'BLOCK':('REPORT_RESTORE_RISK','BLOCK_RESTORE','VERIFY_RESTORE_BLOCKED','BLOCKED'),
 }
 NO_OBLIGATION='NO_OBLIGATION'
-UNSPECIFIED_POLICY='UNSPECIFIED_POLICY'
 
 
 def _document_state_asserted(state,quote):
@@ -153,6 +152,7 @@ class Auditor:
                 if not catalog_only and (row_fields or panel_read):
                     if row_fields:state=infer_state(category,fields)
                     elif category in {'USER_PROFILE','SEARCH_INDEX_ENTRY','USER_EXPORT','MARKETING_PROFILE','SUPPORT_MESSAGE','SUPPORT_ATTACHMENT','ANALYTICS_PROFILE'} and re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',panel):state='PRESENT'
+                    elif category=='BACKUP_ARCHIVE' and re.search(r'\barchives?\b',panel) and re.search(r'\b(?:archive id|archive path|file size|encryption)\b',panel):state='PRESENT'
                     elif category=='SECURITY_AUDIT_LOG' and re.search(r'event reference\s+'+resource_pattern,panel) and re.search(r'integrity seal\s+valid',panel):state='PRESENT'
                 retention=re.search(r'retain until\s+(\d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2})\s*UTC',panel,re.I)
                 if retention:
@@ -197,37 +197,50 @@ class Auditor:
             positive=order_reference or structured or contextual or explicit is True
             negative=explicit is False or _positive_text_evidence(r'\b(?:no shared context|private message|no order (?:context|exists)|agent was not involved)\b',text)
             if positive and negative:return None
-            if negative:return UNSPECIFIED_POLICY
-            established=positive
+            if positive:return rule['required_action']
+            # The request is to delete. REDACT is a conditional preservation
+            # exception; without its positive context, remove the message.
+            return 'DELETE'
         elif category=='SUPPORT_ATTACHMENT' and 'belongs only' in condition:
             exclusive=truth(fields.get('exclusive_subject'))
             text_proof=_positive_text_evidence(r'\bbelongs only to (?:the )?(?:deletion )?subject\b|\bno other subject is linked\b|\bexclusive(?:ly)? assigned to (?:the )?(?:deletion )?subject\b',text)
             negative=exclusive is False or bool(re.search(r'\b(?:does not belong only|not exclusive|not solely|another subject is linked|other subjects are linked)\b|(?<!no )\bother subject is linked\b',text))
             positive=exclusive is True or text_proof
             if negative and positive:return None
-            if negative:return UNSPECIFIED_POLICY
-            established=positive
+            if positive:return rule['required_action']
+            if observation.state=='ABSENT':return 'DELETE'
+            # Preserve a potentially shared file while removing the deletion
+            # subject's identifying content.
+            return 'REDACT'
         elif category in {'ANALYTICS_PROFILE','PRODUCT_TELEMETRY'} and ('attributable' in condition or condition=='attributable'):
             attributable=truth(fields.get('attributable'))
             direct_identifiers=truth(fields.get('direct_identifiers'))
             identity_present=any(normalize(fields.get(k)) not in NULLS for k in ('email','phone','email_hash','user_id','customer_reference','subject_reference'))
+            text_identifiers=bool(re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}|\+\d[\d ()-]{6,}',text))
+            if fields.get('identity_conflict'):return None
+            identity_present=identity_present or text_identifiers
             if attributable is False and not identity_present and direct_identifiers is not True:return NO_OBLIGATION
             established=observation.state=='ANONYMIZED' or attributable is True or identity_present or direct_identifiers is True
         elif category=='EMAIL_DELIVERY_LOG' and 'email address' in condition:
             established=observation.state=='REDACTED' or any(re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',str(v),re.I) for v in fields.values())
         elif category=='SECURITY_AUDIT_LOG' and ('retention' in condition):
             until=fields.get('retention_until');start=fields.get('retention_from',fields.get('retention_start'))
-            if start and timestamp(start)>timestamp(cutoff):return UNSPECIFIED_POLICY
-            if until and timestamp(cutoff)>timestamp(until):return UNSPECIFIED_POLICY
-            established=bool(until and timestamp(cutoff)<=timestamp(until))
+            if start and until and timestamp(start)>timestamp(until):return None
+            if start and timestamp(start)>timestamp(cutoff):return 'DELETE'
+            if until and timestamp(cutoff)>timestamp(until):return 'DELETE'
+            established=bool(until and timestamp(cutoff)<=timestamp(until) and (not start or timestamp(start)<=timestamp(cutoff)))
+            return rule['required_action'] if established else 'DELETE'
         elif category=='LEGAL_HOLD_RECORD' and 'legal hold' in condition:
             until=fields.get('retained_until',fields.get('hold_until'));start=fields.get('hold_from')
             active=truth(fields.get('legal_hold_active',fields.get('hold_active')))
-            if active is False:return UNSPECIFIED_POLICY
-            if start and timestamp(start)>timestamp(cutoff):return UNSPECIFIED_POLICY
-            if until and timestamp(cutoff)>timestamp(until):return UNSPECIFIED_POLICY
-            interval=True
-            established=interval and active is not False and (active is True or bool(until and fields.get('retention_reason')))
+            if active is True and ((start and timestamp(start)>timestamp(cutoff)) or (until and timestamp(cutoff)>timestamp(until))):return None
+            if active is False and until and timestamp(cutoff)<=timestamp(until) and (not start or timestamp(start)<=timestamp(cutoff)):
+                return None
+            if start and until and timestamp(start)>timestamp(until):return None
+            if active is True:return rule['required_action']
+            in_interval=(not start or timestamp(start)<=timestamp(cutoff)) and (not until or timestamp(cutoff)<=timestamp(until))
+            if in_interval and until and fields.get('retention_reason') and active is not False:return rule['required_action']
+            return 'DELETE'
         elif category=='ACCOUNT_TOMBSTONE' and 'stable' in condition:
             stable_value=next((fields.get(k) for k in ('user_id','subject_reference','customer_reference') if normalize(fields.get(k)) not in NULLS),None)
             stable=bool(stable_value) and '@' not in str(stable_value) and not re.fullmatch(r'[+\d ()-]{7,}',str(stable_value))
@@ -237,10 +250,11 @@ class Auditor:
             negative_reference=bool(re.search(r'\b(?:no linked records|no references to preserve|no retained references|without (?:any )?references)\b',text))
             references=structured or textual
             if structured and negative_reference:return None
-            if not structured and negative_reference:return None
             established=str(fields.get('account_status','')).upper() in {'DELETED','DELETED_TOMBSTONE'} and stable and references
+            if not established:return 'DELETE'
         elif category=='BACKUP_ARCHIVE' and ('restore' in condition):
-            if observation.state in {'BLOCKED','ACTIVE'} or truth(fields.get('restore_block_supported')) is True:return 'BLOCK'
+            if observation.state=='BLOCKED' or truth(fields.get('restore_block_supported')) is True:return 'BLOCK'
+            return 'DELETE'
         return rule['required_action'] if established else None
 
     def audit(self,request,authorization,semantic=None):
@@ -294,9 +308,6 @@ class Auditor:
             policy_fields.update(o.fields)
             action=self._action(category,replace(o,fields=policy_fields),cutoff)
             if action==NO_OBLIGATION:continue
-            if action==UNSPECIFIED_POLICY:
-                unknown.append({'resource_id':resource,'category':category,'evidence_id':o.evidence_id,'issue':'Policy predicate is false but fallback treatment is not supplied'})
-                continue
             if not action:
                 unknown.append({'resource_id':resource,'category':category,'issue':'Policy obligation unresolved'});continue
             if not o.state:
@@ -306,9 +317,9 @@ class Auditor:
                 unknown.append({'resource_id':resource,'issue':'Required retained record absent; no permitted restore remediation in contract'});continue
             obligations[(system,resource,action)].append((o,o.state==expected))
             if category=='BACKUP_ARCHIVE':
-                if o.state=='ABSENT' or truth(o.fields.get('archive_present')) is False:
+                if action=='BLOCK' and (o.state=='ABSENT' or truth(o.fields.get('archive_present')) is False):
                     unknown.append({'resource_id':resource,'issue':'Required retained archive absent'})
-                else:
+                elif action=='BLOCK':
                     # A restore-entry read or explicit archive state establishes archive
                     # presence independently from whether restores are allowed.
                     obligations[(system,resource,'RETAIN')].append((o,True))
