@@ -1,0 +1,21 @@
+# added by install-aidlc.ps1
+log.txt
+.env*
+.venv/
+venv/
+__pycache__/
+*.pyc
+code.zip
+
+.cache/
+artifacts/
+output.csv
+*.zip
+dataset/
+.ollama/
+models/
+.pytest_cache/
+credentials.*
+secrets.*
+token.json
+
