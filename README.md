@@ -4,7 +4,7 @@ A Python audit agent for HackerRank's Orchestrate October 2026 challenge. It rec
 
 ## Current run status
 
-The latest strict run processed all 518 requests: 514 resolved and 4 unresolved. The agent withheld `output.csv` because three resources lack a timely state read and one request has no grounded resource association. The 32-request sample diagnostic resolved 25 requests and left 7 unresolved, so sample accuracy is reported as not measured. No labels are guessed to force a submission file.
+The latest strict run resolved all **518/518** requests and produced the required output CSV: 356 INCOMPLETE, 152 COMPLETE, and 10 NOT_APPLICABLE. Independent schema, case coverage, ordering and citation-cutoff checks passed. The sample diagnostic resolves **28/32** requests: status accuracy is **87.50%** across all 32 with abstentions counted incorrect, and **100%** among resolved cases. Exact sequence accuracy is **18.75%**, step accuracy **56.99%**, field accuracy **68.82%**, and resource recall **66.67%**. Four sample audits remain unresolved; full hidden-test accuracy is unknown. See [the evaluation report](code/evaluation/evaluation_report.md) for limitations.
 
 ## Requirements and setup
 
@@ -13,7 +13,7 @@ The latest strict run processed all 518 requests: 514 resolved and 4 unresolved.
 - `pypdf`; install dependencies with `python -m pip install -r code/requirements.txt`
 - Tesseract OCR is optional for image evidence
 
-Download the participant-facing `dataset/` files from the [official challenge repository](https://github.com/interviewstreet/hackerrank-orchestrate-october26) and put `dataset/` beside `code/`. The private corpus and expected outputs are intentionally excluded from this public repository. Run the model locally with `ollama pull qwen2.5:0.5b`; no cloud API key is needed.
+Download the participant-facing `dataset/` files from the [official challenge repository](https://github.com/interviewstreet/hackerrank-orchestrate-october26) and put `dataset/` beside `code/`. The competition corpus and expected outputs are intentionally excluded from this public repository. Run the model locally with `ollama pull qwen2.5:0.5b`; no cloud API key is needed.
 
 From the repository root:
 
@@ -40,6 +40,6 @@ python -m pytest code/tests -q
 python scripts/package.py
 ```
 
-The suite currently passes 83 tests and 34 subtests. The package script builds `code.zip` from `code/`, requires the evaluation and usage reports, and excludes environment files, credentials, caches, build output and nested archives. The generated reports are included in `code/evaluation/`.
+The suite currently passes 99 tests and 40 subtests. The package script builds `code.zip` from `code/`, requires the evaluation and usage reports, and excludes environment files, credentials, caches, build output and nested archives. The generated reports are included in `code/evaluation/`.
 
 This repository contains implementation and diagnostics only; it does not include a contest submission or claim a successful score.

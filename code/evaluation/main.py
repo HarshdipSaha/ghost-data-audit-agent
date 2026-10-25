@@ -26,20 +26,20 @@ def read_rows(path: str | Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
-def evaluate(prediction_path: str | Path, reference_path: str | Path) -> dict[str, Any]:
+def evaluate(prediction_path: str | Path, reference_path: str | Path, allow_missing: bool = False) -> dict[str, Any]:
     predicted, expected = read_rows(prediction_path), read_rows(reference_path)
     missing = expected.keys() - predicted.keys()
-    if missing:
+    if missing and not allow_missing:
         raise ValueError(f"Predictions omit {len(missing)} reference case(s)")
     cases = len(expected)
-    status_correct = sum(predicted[k]["deletion_status"] == expected[k]["deletion_status"] for k in expected)
+    status_correct = sum(predicted.get(k, {}).get("deletion_status") == expected[k]["deletion_status"] for k in expected)
     exact_sequences = 0
     total_fields = matching_fields = expected_steps = predicted_steps = exact_steps = 0
     resource_expected: set[tuple[str, str, str]] = set()
     resource_found: set[tuple[str, str, str]] = set()
     for case_id, expected_row in expected.items():
-        p_steps, e_steps = predicted[case_id]["steps"], expected_row["steps"]
-        if p_steps == e_steps:
+        p_steps, e_steps = predicted.get(case_id, {}).get("steps", []), expected_row["steps"]
+        if case_id in predicted and p_steps == e_steps:
             exact_sequences += 1
         expected_steps += len(e_steps)
         predicted_steps += len(p_steps)
@@ -57,6 +57,10 @@ def evaluate(prediction_path: str | Path, reference_path: str | Path) -> dict[st
                 matching_fields += e_step.get(field) == p_step.get(field)
     return {
         "cases": cases,
+        "scored_predictions": cases - len(missing),
+        "missing_cases": sorted(missing),
+        "prediction_coverage": (cases - len(missing)) / cases if cases else 1.0,
+        "status_accuracy_on_resolved": status_correct / (cases - len(missing)) if cases > len(missing) else 0.0,
         "status_accuracy": status_correct / cases if cases else 0.0,
         "status_correct": status_correct,
         "sequence_accuracy": exact_sequences / cases if cases else 0.0,
@@ -73,8 +77,8 @@ def evaluate(prediction_path: str | Path, reference_path: str | Path) -> dict[st
     }
 
 
-def render_report(metrics: dict[str, Any], command: str) -> str:
-    return """# Evaluation report
+def render_report(metrics: dict[str, Any], command: str, run_summary: dict[str, Any] | None = None) -> str:
+    report = """# Evaluation report
 
 ## Method
 
@@ -87,11 +91,14 @@ Command: `{command}`
 | Metric | Result |
 |---|---:|
 | Cases | {cases} |
+| Resolved prediction coverage | {prediction_coverage:.3%} ({scored_predictions}/{cases}) |
 | Status accuracy | {status_accuracy:.3%} ({status_correct}/{cases}) |
 | Exact sequence accuracy | {sequence_accuracy:.3%} ({exact_sequences}/{cases}) |
 | Step accuracy | {step_accuracy:.3%} |
 | Field accuracy | {field_accuracy:.3%} ({field_matches}/{field_positions}) |
 | Resource recall | {resource_recall:.3%} ({resources_found}/{expected_resources}) |
+
+When coverage is below 100%, this is diagnostic evaluation. Missing cases count as incorrect for status and exact sequence accuracy; their expected steps and resources remain in the denominators. No status was invented for an unresolved request. Status accuracy restricted to resolved cases: {status_accuracy_on_resolved:.3%}. Missing case IDs: {missing_cases}.
 
 ## Team-authored evaluation cases
 
@@ -100,6 +107,11 @@ Command: `{command}`
 3. An identity's email changes after the audit cutoff: later email ownership does not leak backward.
 4. A same-trace cache miss is followed by an explicit 404 profile read: only the 404 read supports absence.
 5. An escaped log envelope preserves trace and service boundaries while a neighboring trace is ignored.
+6. A correction request says "without removing any of my records": deletion authorization is false, including when the local model votes true.
+7. A catalog-linked customer statement and an object metadata panel prove concrete copies exist without relying on filenames as case labels.
+8. A restore-candidate read joins its own trace identity and interprets eligibility plus deletion-block controls; retries alone establish no state.
+9. Missing policy metadata cannot justify destroying present security records or conversation history; explicit expiry/private predicates remain effective.
+10. A retained record's stable reference establishes why a deleted-account tombstone must remain with direct identifiers removed.
 
 ## Failures and improvements
 
@@ -107,10 +119,22 @@ Command: `{command}`
 2. Resource or catalog mentions could be mistaken for live record reads. Document evidence now requires a visible row or state, keeps embedded fact time separate from capture availability, and rejects mentions that postdate the audit cutoff.
 3. Email or phone aliases could be recycled to another stable user. Identity discovery now checks cutoff ownership and rejects conflicting stable-user references.
 4. A clean primary table could hide a populated physical replica, and one citation could accidentally stand in for multiple copies. Replica scopes remain separate, and complete decisions retain evidence for each physical obligation.
-5. Conditional retention and redaction policies were previously inferred from category alone. The auditor now applies the deletion request as a baseline, overrides it only for a grounded policy exception, and refuses contradictory identity or state evidence.
+5. A destructive fallback treated missing retention/context metadata as permission to delete security logs and conversations. Present security records now remain until supplied evidence establishes expiry; conversations are redacted unless explicitly private/nonshared. Backup access controls are blocked while the archive remains available. These are documented policy conventions; they do not create missing identity/resource links.
+6. Restore-candidate evaluations were omitted by the event adapter. They now preserve trace identity and distinguish eligible, unblocked recovery paths from blocked ones. Replica service labels are mapped to the owning logical system while physical scope is retained.
+
+## Remaining limitations
+
+Four sample requests remain unresolved: three have no independently grounded resource association, and one lacks an authoritative state read for a discovered account. Some clean profile/analytics evidence has no subject or lookup key, so it cannot be attributed merely by reading the sample answer. Remaining sequence mismatches include missing resource relationships, policy interpretations, citation choices, and additional backup-presence checks. Exact sequence accuracy remains substantially below status accuracy; resolving all full-set rows does not establish their hidden-label accuracy.
+
+The current official contract was checked against the [organizer problem statement](https://github.com/interviewstreet/hackerrank-orchestrate-october26/blob/main/problem_statement.md). It requires audit-time, participant-facing evidence; no organizer truth or reference-answer mapping is used by the predictor.
 
 This report reflects the current run. Regenerate it after every prediction change. Any mismatch should be traced to a general parser, time, identity, coverage, policy, citation or ordering defect; no per-case prediction lookup is permitted.
 """.format(command=command, **metrics)
+    if run_summary is not None:
+        report += '\n## Full request run\n\n'
+        report += f"Requests: **{run_summary.get('requests', 0)}**; resolved: **{run_summary.get('resolved', 0)}**; unresolved: **{run_summary.get('unresolved', 0)}**; complete output written: **{'yes' if run_summary.get('output_written') else 'no'}**.\n"
+        report += 'The full set has no participant-visible reference labels, so full-set correctness is not measured.\n'
+    return report
 
 
 def render_blocked_report(summary: dict[str, Any], sample_summary: dict[str, Any] | None = None) -> str:
@@ -198,6 +222,8 @@ def main() -> None:
     parser.add_argument("--diagnostic-summary", type=Path, help="Render an honest blocked report from a run summary")
     parser.add_argument("--sample-summary", type=Path, help="Optional sample-run summary for a blocked report")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--run-summary", type=Path, help="Include the final full-run coverage and output state in the evaluation report")
+    parser.add_argument("--allow-missing", action="store_true", help="Diagnostic only: include missing cases as abstentions, report coverage, and count them as incorrect")
     args = parser.parse_args()
     if args.diagnostic_summary:
         summary = json.loads(args.diagnostic_summary.read_text(encoding="utf-8"))
@@ -210,10 +236,13 @@ def main() -> None:
         return
     if not args.prediction or not args.reference:
         parser.error("prediction and reference are required unless --diagnostic-summary is supplied")
-    metrics = evaluate(args.prediction, args.reference)
+    metrics = evaluate(args.prediction, args.reference, allow_missing=args.allow_missing)
     print(json.dumps(metrics, indent=2))
     if args.report:
-        args.report.write_text(render_report(metrics, f"python code/evaluation/main.py {args.prediction} {args.reference}"), encoding="utf-8")
+        run_summary = json.loads(args.run_summary.read_text(encoding='utf-8')) if args.run_summary else None
+        command = f"python code/evaluation/main.py {args.prediction} {args.reference}" + (' --allow-missing' if args.allow_missing else '')
+        if args.run_summary:command += f' --run-summary {args.run_summary}'
+        args.report.write_text(render_report(metrics, command, run_summary), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -53,6 +53,19 @@ def test_full_prediction_can_be_scored_on_reference_subset(tmp_path):
     assert evaluator.evaluate(prediction, reference)["cases"] == 1
 
 
+def test_diagnostic_scoring_counts_abstentions_and_reports_coverage(tmp_path):
+    prediction, reference = tmp_path / 'partial.csv', tmp_path / 'reference.csv'
+    write(prediction, [('c1', 'NOT_APPLICABLE', [])])
+    write(reference, [('c1', 'NOT_APPLICABLE', []), ('c2', 'NOT_APPLICABLE', [])])
+    scores = evaluator.evaluate(prediction, reference, allow_missing=True)
+    assert scores['status_accuracy'] == 0.5
+    assert scores['sequence_accuracy'] == 0.5
+    assert scores['prediction_coverage'] == 0.5
+    assert scores['scored_predictions'] == 1
+    assert scores['missing_cases'] == ['c2']
+    assert scores['status_accuracy_on_resolved'] == 1
+
+
 def test_usage_report_marks_diagnostic_run_and_accounts_for_tokens():
     report = usage_report.render_usage_report({
         "requests": 518,

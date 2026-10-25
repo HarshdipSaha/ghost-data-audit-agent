@@ -22,11 +22,15 @@ From the repository root:
 python code/main.py
 ```
 
-The command reads all rows from `dataset/deletion_requests.csv`, uses all CSV and manifested evidence files, and writes root `output.csv` only after every case has a resolvable, validated decision. It writes a diagnostic `artifacts/run_summary.json`; this file can contain case-specific internal details and is ignored by Git.
+The command reads all rows from `dataset/deletion_requests.csv`, uses all CSV and manifested evidence files, and writes root `output.csv` only after every case has a resolvable, validated decision. It writes a diagnostic `artifacts/run_summary.json`; this file can contain case-specific internal details and is ignored by Git. The latest full run resolved **518/518** and wrote the required CSV (356 INCOMPLETE, 152 COMPLETE, 10 NOT_APPLICABLE). Full-set hidden-label accuracy is unknown.
 
 For an early limited diagnostic run, `python code/main.py --max-cases 8` processes only the first eight cases, never writes a partial output, and returns summary counts. The CLI exits nonzero and leaves `output.csv` untouched when any required audit fact remains unresolved; it will not invent a status.
 
 To run the public reference requests independently, use `python code/main.py --requests dataset/sample_deletion_requests.csv --output artifacts/sample_predictions.csv --summary artifacts/sample_run_summary.json`. Alternate request files do not overwrite the full-set `output.csv` by default.
+
+For diagnostic evaluation when some sample requests are unresolved, add `--diagnostic-predictions artifacts/sample_resolved_diagnostic.csv`. This writes only resolved rows to a separate path; it never becomes a complete submission CSV. Diagnostic predictions cannot overwrite root `output.csv` or the requested complete output path.
+
+After extracting `code.zip`, run the extracted entry point with explicit paths, for example `python main.py --dataset ../dataset --output ../output.csv --summary ../artifacts/run_summary.json` from the extracted code folder. Install dependencies there with `python -m pip install -r requirements.txt`.
 
 ## Architecture
 
@@ -38,7 +42,7 @@ To run the public reference requests independently, use `python code/main.py --r
 
 Evidence must be available by `audit_at` and describe a state no later than that cutoff. A successful delete command is not proof of absence. A cache miss, absent search snippet, filename match, or unscoped empty list is not absence evidence. Primary absence does not erase a dirty replica.
 
-An authorized deletion request supplies the baseline `DELETE` treatment. A conditional rule overrides that baseline only when its predicate is grounded: active retention or legal hold preserves the record; shared support context is redacted; a tombstone is redacted only when a stable reference must remain for retained records. If an attachment is shared or exclusivity is not established, the agent plans redaction so another subject's file is not deleted. Contradictory facts and ambiguous identity remain unresolved. Explicitly non-attributable analytics records with no concrete subject identifiers create no deletion obligation.
+An authorized deletion request supplies baseline deletion for ordinary records. Policy treatments preserve present security records unless supplied expiry evidence establishes otherwise, redact conversations unless they are explicitly private/nonshared, and block observed restore access while retaining the archive. Unknown retention/context metadata does not authorize destroying retained data. Tombstone preservation can be established by another required retained record referencing the same stable subject. Shared attachments are redacted unless exclusive ownership is established. Contradictory facts and ambiguous identity remain unresolved. Explicitly non-attributable analytics records with no concrete subject identifiers create no deletion obligation. These conventions are documented in the evaluation report and AI-DLC effort.
 
 ## Evaluation
 
@@ -63,6 +67,15 @@ python code/evaluation/main.py --diagnostic-summary artifacts/full_run_summary.j
 ```
 
 Reports must be regenerated from the final run. The package script requires both reports and excludes nested archives and build output.
+
+The current sample diagnostic resolves 28/32 cases. Measure all 32 with explicit abstentions using:
+
+```bash
+python code/main.py --requests dataset/sample_deletion_requests.csv --summary artifacts/sample_run_summary.json --diagnostic-predictions artifacts/sample_resolved_diagnostic.csv
+python code/evaluation/main.py artifacts/sample_resolved_diagnostic.csv dataset/sample_output.csv --allow-missing --run-summary artifacts/full_run_summary.json --report code/evaluation/evaluation_report.md
+```
+
+Current results: **87.50%** status accuracy across all 32 (unresolved cases count incorrect), **100%** status accuracy among the 28 resolved cases, **18.75%** exact sequence accuracy, **56.99%** step accuracy, **68.82%** field accuracy, and **66.67%** resource recall. Four samples remain unresolved because independent resource links or state proof are missing; remaining sequence mismatches are documented. These are development sample results, not hidden-test scores. The suite passes 99 tests and 40 subtests; install `pytest` and `pytest-subtests` to run it.
 
 ## Artifacts
 

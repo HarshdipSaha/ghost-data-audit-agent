@@ -95,13 +95,23 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="Prediction CSV (defaults to output.csv for the full set)")
     parser.add_argument("--max-cases", type=int, help="Diagnostic run only; never writes a partial output.csv")
     parser.add_argument("--summary", type=Path, default=repo / "artifacts" / "run_summary.json")
+    parser.add_argument("--diagnostic-predictions", type=Path, help="Resolved-only CSV for diagnostic evaluation; never a submission artifact")
     args = parser.parse_args()
 
     is_full_request_set = args.requests is None
     output = None if args.max_cases is not None else (args.output or (repo / "output.csv" if is_full_request_set else repo / "artifacts" / "sample_predictions.csv"))
     try:
+        if args.diagnostic_predictions and args.diagnostic_predictions.resolve() in {
+            (repo / 'output.csv').resolve(), output.resolve() if output else (repo / 'output.csv').resolve(),
+        }:
+            raise ValueError('Diagnostic predictions must use a separate artifact path')
         expected_count = 518 if args.requests is None and args.max_cases is None else None
-        _, summary, _ = run(args.dataset, output, args.max_cases, args.requests, expected_count)
+        decisions, summary, _ = run(args.dataset, output, args.max_cases, args.requests, expected_count)
+        if args.diagnostic_predictions:
+            args.diagnostic_predictions.parent.mkdir(parents=True, exist_ok=True)
+            write_output(args.diagnostic_predictions, decisions)
+            summary['diagnostic_predictions'] = str(args.diagnostic_predictions)
+            summary['diagnostic_rows'] = len(decisions)
     except Exception as exc:
         print(f"Audit run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

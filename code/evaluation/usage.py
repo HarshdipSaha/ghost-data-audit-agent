@@ -44,6 +44,8 @@ def render_usage_report(summary: dict[str, Any]) -> str:
 - Evidence interpretations left unresolved after malformed responses: **{int(usage.get('evidence_unresolved', 0))}**
 
 The configured model runs locally through Ollama, so the estimated hosted inference cost is $0.00. This estimate excludes local electricity and hardware costs. If `Prediction artifact produced` is **no**, this is a diagnostic run and must not be described as the run that produced a final `output.csv`.
+
+Cache accounting: the figures above count new model calls/tokens in this run. A warm replay can have cache hits and zero new tokens. Cached interpretations originated in earlier local-model runs; their original token counts are not stored per cache entry and are not included in these final-run totals. Clear the local cache for a cold run; no cache or model weights are included in the source archive.
 """
 
 

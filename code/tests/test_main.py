@@ -94,3 +94,15 @@ def test_cli_rejects_wrong_row_count_for_default_full_dataset(tmp_path):
             assert "exactly 518" in str(exc)
         else:
             raise AssertionError("full request run must enforce the 518-row contract")
+
+
+def test_cli_can_export_resolved_only_diagnostics_without_claiming_complete_output(tmp_path):
+    import json
+    diagnostic, summary_path = tmp_path / 'diagnostic.csv', tmp_path / 'summary.json'
+    summary = {'requests': 2, 'resolved': 1, 'unresolved': 1, 'output_written': False}
+    decisions = [AuditDecision('c1', 'NOT_APPLICABLE', [])]
+    args = ['main.py', '--requests', 'sample.csv', '--diagnostic-predictions', str(diagnostic), '--summary', str(summary_path)]
+    with patch.object(main.sys, 'argv', args), patch.object(main, 'run', return_value=(decisions, summary, {})):
+        assert main.main() == 1
+    assert len(list(csv.DictReader(diagnostic.open(encoding='utf-8')))) == 1
+    assert json.loads(summary_path.read_text())['output_written'] is False
