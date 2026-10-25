@@ -33,7 +33,7 @@ class CoreTests(unittest.TestCase):
                 'LEGAL_HOLD_RECORD':('A supplied legal hold is active','RETAIN',{'legal_hold_active':True}),
                 'ACCOUNT_TOMBSTONE':('Account is deleted and only a stable internal user_id is needed to preserve references to retained records','REDACT',{'account_status':'DELETED','subject_reference':'u','retained_references':True}),
             }
-            fallbacks={'SUPPORT_MESSAGE':'DELETE','SUPPORT_ATTACHMENT':'REDACT','ANALYTICS_PROFILE':None,'SECURITY_AUDIT_LOG':'DELETE','LEGAL_HOLD_RECORD':'DELETE','ACCOUNT_TOMBSTONE':'DELETE'}
+            fallbacks={'SUPPORT_MESSAGE':'REDACT','SUPPORT_ATTACHMENT':'REDACT','ANALYTICS_PROFILE':None,'SECURITY_AUDIT_LOG':'RETAIN','LEGAL_HOLD_RECORD':'DELETE','ACCOUNT_TOMBSTONE':'DELETE'}
             for category,(condition,action,fields) in conditions.items():
                 auditor.rules[category]={'condition':condition,'required_action':action}
                 o=Observation('e','s','r',category,'PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')
@@ -51,7 +51,7 @@ class CoreTests(unittest.TestCase):
             o=Observation('e','support_platform','message_1','SUPPORT_MESSAGE','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')
             for fields,expected in (
                 ({'text':'No order context; this is a private customer message.'},'DELETE'),
-                ({'order_reference':'null'},'DELETE'),
+                ({'order_reference':'null'},'REDACT'),
                 ({'text':'The agent was not involved and no order exists.'},'DELETE'),
             ):
                 o.fields=fields
@@ -59,7 +59,7 @@ class CoreTests(unittest.TestCase):
             o.fields={'text':'The customer and agent discussed order reference ORD-17.'}
             self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'REDACT')
             o.fields={'ticket_id':'CS-17','channel':'email','message_text':'Please send the delivery update.'}
-            self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'DELETE')
+            self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'REDACT')
             o.fields={'ticket_id':'CS-17','channel':'email','message_text':'The customer and agent discussed order reference ORD-17.'}
             self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'REDACT')
 
@@ -79,7 +79,7 @@ class CoreTests(unittest.TestCase):
             message=Observation('e','support_platform','m','SUPPORT_MESSAGE','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'shared_context':False})
             self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'DELETE')
             message.fields={}
-            self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'DELETE')
+            self.assertEqual(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'),'REDACT')
             message.fields={'shared_context':False,'order_reference':'ORD-17'}
             self.assertIsNone(auditor._action('SUPPORT_MESSAGE',message,'2026-01-02T00:00:00Z'))
 
@@ -222,14 +222,14 @@ class CoreTests(unittest.TestCase):
             o.fields={'legal_hold_active':False}
             self.assertEqual(auditor._action(o.category,o,'2026-01-02T00:00:00Z'),'DELETE')
 
-    def test_security_records_without_active_retention_fall_back_to_deletion(self):
+    def test_security_retention_requires_expiry_before_deleting_a_present_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.make_dataset(root,[]);auditor=Auditor(root)
             auditor.rules['SECURITY_AUDIT_LOG']={'condition':'Record is within the supplied retention period','required_action':'RETAIN'}
             observation=Observation('e','security_service','s','SECURITY_AUDIT_LOG','PRESENT','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',{'retention_until':'2026-01-01T01:00:00Z'})
             self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'DELETE')
             observation.fields={}
-            self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'DELETE')
+            self.assertEqual(auditor._action('SECURITY_AUDIT_LOG',observation,'2026-01-02T00:00:00Z'),'RETAIN')
 
     def test_false_support_predicate_uses_base_delete_treatment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +285,111 @@ class CoreTests(unittest.TestCase):
             auditor.store.documents=[{'file_id':'doc','kind':'ocr','captured_at':'2026-01-01T12:00:00Z','text':'PRODUCTION 01 Jan 2026 10:00 UTC\nreceipt.pdf\nFile size 684 KB\nOwner old@example.com'}]
             reads=auditor._document_reads({'obj_a'},'2026-01-02T00:00:00Z',None)[0]
             self.assertEqual(len(reads),1);self.assertEqual(reads[0].state,'PRESENT')
+
+    def test_catalog_linked_customer_statement_is_itself_a_personal_data_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            self.make_dataset(root,[], 'a,2026-01-01T11:00:00Z,LINK_RESOURCE_IDENTITY,data_catalog,export_service,export_a,,Data catalog linked export_a (INV-ABC-2026) to old@example.com and u\n')
+            auditor=Auditor(root)
+            auditor.store.documents=[{'file_id':'doc','kind':'pdf','captured_at':'2026-01-01T12:00:00Z','text':'CUSTOMER STATEMENT\nStatement INV-ABC-2026\nCustomer Person\nold@example.com\nOrder ORD-92\nDelivery address\n12 Example Road'}]
+            reads=auditor._document_reads({'export_a'},'2026-01-02T00:00:00Z',None)[0]
+            self.assertEqual(len(reads),1)
+            self.assertEqual((reads[0].state,reads[0].observed_at),('PRESENT','2026-01-01T12:00:00Z'))
+            self.assertEqual(auditor._document_reads({'export_a'},'2026-01-01T11:30:00Z',None)[0],[])
+
+    def test_object_metadata_proves_catalog_linked_attachment_without_visible_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            self.make_dataset(root,[], 'a,2026-01-01T11:00:00Z,LINK_RESOURCE_IDENTITY,data_catalog,object_storage,obj_a,,Attachment catalog confirmed obj_a (receipt_87.pdf) belongs only to old@example.com and u\n')
+            auditor=Auditor(root)
+            doc={'file_id':'doc','kind':'ocr','captured_at':'2026-01-01T12:00:00Z','text':'Object Storage\nObjects Updated moments ago\nreceipt_87.pdf\nSize 500 KB\nContent type application/pdf\nEncryption AES-256'}
+            auditor.store.documents=[doc]
+            reads=auditor._document_reads({'obj_a'},'2026-01-02T00:00:00Z',None)[0]
+            self.assertEqual(len(reads),1)
+            self.assertEqual(reads[0].state,'PRESENT')
+            auditor.store.documents=[dict(doc,text='Resource catalog receipt_87.pdf; file size unknown')]
+            self.assertEqual(auditor._document_reads({'obj_a'},'2026-01-02T00:00:00Z',None)[0],[])
+
+    def test_retained_reference_registry_schema_is_a_stable_reference_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            self.make_dataset(root,[], 'a,2026-01-01T11:00:00Z,LINK_RESOURCE_IDENTITY,data_catalog,identity_service,ref_a,,Data catalog linked ref_a (u) to old@example.com and u\n')
+            auditor=Auditor(root)
+            auditor.rules['ACCOUNT_TOMBSTONE']={'condition':'Account is deleted and only a stable internal user_id is needed to preserve references to retained records','required_action':'REDACT'}
+            text='Customer Reference Registry\nRetained reference\nu\nCustomer key\nOverview\nLinked records\nOrders ORD-92 Linked to customer\nUpdated moments ago'
+            doc={'file_id':'doc','kind':'ocr','captured_at':'2026-01-01T12:00:00Z','text':text}
+            auditor.store.documents=[doc]
+            reads=auditor._document_reads({'ref_a'},'2026-01-02T00:00:00Z',None)[0]
+            self.assertEqual(len(reads),1)
+            self.assertEqual(reads[0].state,'REDACTED')
+            self.assertEqual(auditor._action('ACCOUNT_TOMBSTONE',reads[0],'2026-01-02T00:00:00Z'),'REDACT')
+            auditor.store.documents=[dict(doc,text=text+'\nEmail old@example.com')]
+            self.assertEqual(auditor._document_reads({'ref_a'},'2026-01-02T00:00:00Z',None)[0][0].state,'PRESENT')
+            auditor.store.documents=[dict(doc,text=text+'\nFull name: Example Person')]
+            self.assertEqual(auditor._document_reads({'ref_a'},'2026-01-02T00:00:00Z',None)[0][0].state,'PRESENT')
+            auditor.store.documents=[dict(doc,text='Customer reference catalog\nu\nLinked records ORD-92')]
+            self.assertEqual(auditor._document_reads({'ref_a'},'2026-01-02T00:00:00Z',None)[0],[])
+
+    def test_contact_lookup_is_a_secondary_identifier_even_inside_analytics_system(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.make_dataset(root,[])
+            (root/'evidence_files.csv').write_text('file_id,file_path,origin,captured_at\ne,evidence/a.log,source,2026-01-01T12:00:00Z\n')
+            (root/'evidence/a.log').write_text('2026-01-01T10:00:00Z service=analytics_platform event=contact_lookup_completed resource_id=contact_a rows=1 correlation_key=old@example.com\n')
+            record=Store(root).observations[0]
+            self.assertEqual((record.category,record.state),('SECONDARY_IDENTIFIER','PRESENT'))
+
+    def test_unknown_policy_metadata_does_not_authorize_destroying_retained_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.make_dataset(root,[]);auditor=Auditor(root)
+            auditor.rules.update({
+                'SECURITY_AUDIT_LOG':{'condition':'Record is within the supplied retention period','required_action':'RETAIN'},
+                'SUPPORT_MESSAGE':{'condition':'Conversation contains shared customer, agent, or order context that must be retained','required_action':'REDACT'},
+                'BACKUP_ARCHIVE':{'condition':'Restore access can be blocked','required_action':'RETAIN'},
+            })
+            for category,state,fields,expected in [
+                ('SECURITY_AUDIT_LOG','PRESENT',{'integrity_check':'passed'},'RETAIN'),
+                ('SECURITY_AUDIT_LOG','PRESENT',{'retention_active':False},'DELETE'),
+                ('SUPPORT_MESSAGE','REDACTED',{'message_excerpt':'Customer contacted support about account access.'},'REDACT'),
+                ('SUPPORT_MESSAGE','PRESENT',{'shared_context':False},'DELETE'),
+                ('BACKUP_ARCHIVE','ACTIVE',{'restore_allowed':True},'BLOCK'),
+                ('BACKUP_ARCHIVE','PRESENT',{'restore_block_supported':False},'DELETE'),
+            ]:
+                with self.subTest(category=category,fields=fields):
+                    o=Observation('e','s','r',category,state,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',fields)
+                    self.assertEqual(auditor._action(category,o,'2026-01-02T00:00:00Z'),expected)
+
+    def test_retained_record_reference_establishes_tombstone_preservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            self.make_dataset(root,[
+                dict(system='identity_service',resource_id='ref_a',record_type='ACCOUNT_TOMBSTONE',subject_reference='u',account_status='DELETED',name=None,email=None,phone=None,email_hash=None),
+                dict(system='security_service',resource_id='security_a',record_type='SECURITY_AUDIT_LOG',subject_reference='u',retention_until='2027-01-01T00:00:00Z'),
+            ])
+            auditor=Auditor(root)
+            auditor.rules['ACCOUNT_TOMBSTONE']={'condition':'Account is deleted and only a stable internal user_id is needed to preserve references to retained records','required_action':'REDACT'}
+            decision=auditor.audit(dict(case_id='c',email='old@example.com',audit_at='2026-01-02T00:00:00Z'),True)
+            self.assertEqual(decision.status,'COMPLETE')
+            self.assertIn('VERIFY_RECORD_REDACTED',[s['operation'] for s in decision.steps])
+
+    def test_restore_candidate_read_preserves_trace_identity_and_block_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.make_dataset(root,[])
+            (root/'evidence_files.csv').write_text('file_id,file_path,origin,captured_at\ne,evidence/a.log,source,2026-01-01T12:00:00Z\n')
+            (root/'evidence/a.log').write_text('2026-01-01T10:00:00Z service=backup_service instance=a trace_id=t event=restore_policy_check_started subject_key=old@example.com\n2026-01-01T10:00:01Z service=backup_service instance=a trace_id=t event=restore_candidate_evaluated resource_id=b eligible=true deletion_block=false\n')
+            observations=Store(root).observations
+            self.assertEqual(len(observations),1)
+            self.assertEqual(observations[0].state,'ACTIVE')
+            self.assertIn('old@example.com',observations[0].identity_keys)
+            self.assertEqual(infer_state('BACKUP_ARCHIVE',{'eligible':True,'deletion_block':True}),'BLOCKED')
+            self.assertEqual(infer_state('BACKUP_ARCHIVE',{'eligible':False}),'')
+
+    def test_support_replica_service_keeps_physical_scope_under_owning_system(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.make_dataset(root,[])
+            (root/'evidence_files.csv').write_text('file_id,file_path,origin,captured_at\ne,evidence/a.log,source,2026-01-01T12:00:00Z\n')
+            (root/'evidence/a.log').write_text('2026-01-01T10:00:00Z service=support_replica instance=region-a event=contact_query_completed resource_id=r rows=1 lookup_key=old@example.com\n')
+            read=Store(root).observations[0]
+            self.assertEqual((read.system_id,read.scope),('support_platform','region-a'))
 
     def make_dataset(self, root, records, activities=''):
         (root/'evidence').mkdir()

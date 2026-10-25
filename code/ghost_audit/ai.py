@@ -409,7 +409,7 @@ def _explicit_delete_quote(text: str, quote: str) -> bool | None:
             return True
     action = r"(?:\b(?:delet\w*|eras\w*|remov\w*|close|closed|closing|terminate\w*|elimin\w*|suppression|supprim\w*|exclus\w*|apagar|apague\w*|exclu\w*|effac\w*|borr\w*|fermer|ferm\w*|cerr\w*)\b|삭제|지우\w*|제거)"
     negative = (
-        rf"\b(?:do not|don't|dont|never|not|no|nunca|nao|n\u00e3o|no quiero|nao quero|n\u00e3o quero)\b"
+        rf"\b(?:do not|don't|dont|never|not|no|without|nunca|nao|n\u00e3o|no quiero|nao quero|n\u00e3o quero)\b"
         rf".{{0,45}}{action}"
         rf"|\bne\b.{{0,30}}\b(?:pas|jamais)\b.{{0,30}}{action}"
         rf"|\bne\b.{{0,15}}{action}.{{0,15}}\b(?:pas|jamais)\b"
@@ -423,6 +423,13 @@ def _explicit_delete_quote(text: str, quote: str) -> bool | None:
     for sentence in re.split(r"[.!?;\n]+", source):
         if not re.search(action, sentence) or not re.search(target, sentence):
             continue
+        clauses=re.split(r'\b(?:without|but)\b',sentence,maxsplit=1)
+        if (len(clauses)==2 and re.search(action,clauses[0]) and re.search(target,clauses[0])
+            and not re.search(negative,clauses[0])
+            and re.search(r'\b(?:retained|legally|tax|invoices?)\b',clauses[1])
+            and re.search(r'\b(?:orders?|records?|invoices?|documents?)\b',clauses[1])):
+            positive_context=True
+            continue
         if re.search(negative, sentence):
             negative_context = True
         elif any(re.search(action, _normalize_quote(candidate)) and re.search(target, _normalize_quote(candidate)) for candidate in _quote_variants(quote)):
@@ -433,6 +440,10 @@ def _explicit_delete_quote(text: str, quote: str) -> bool | None:
         return True
     if negative_context:
         return False
+    # An explicit request to make retained records unidentifiable authorizes
+    # a deletion/anonymization audit, even when the account is already gone.
+    if re.search(r'\b(?:confirm|ensure|verify|check)\b.{0,160}\b(?:remaining|retained)\s+(?:records?|data)\b.{0,50}\b(?:cannot|can no longer|do not)\s+identify\s+me\b',source):
+        return True
     # Common standalone requests that are explicitly different from deletion.
     non_deletion = (
         r"\b(?:export|download|copy|obtain|access|view|tell me what|information request|subject access|data access)\b.{0,100}\b(?:data|information|records?|account|profile|personal)\b"

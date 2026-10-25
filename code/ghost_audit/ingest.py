@@ -115,6 +115,10 @@ def infer_state(category,fields):
         return 'ACTIVE' if flag is True else 'DISABLED' if flag is False else ''
     if category=='BACKUP_ARCHIVE':
         flag=truth(fields.get('restore_allowed',fields.get('restore_decision',fields.get('decision'))))
+        if flag is None:
+            blocked=truth(fields.get('deletion_block'))
+            if blocked is True:return 'BLOCKED'
+            if blocked is False and truth(fields.get('eligible')) is True:return 'ACTIVE'
         return 'ACTIVE' if flag is True else 'BLOCKED' if flag is False else ''
     if fields.get('status_code',fields.get('http_status')) in (404,'404') or str(fields.get('rows',''))=='0':return 'ABSENT'
     if category=='SEARCH_INDEX_ENTRY':
@@ -284,15 +288,20 @@ class Store:
             is_read=any(token in event for token in ('lookup_completed','query_completed','profile_read','profile_scan_completed','message_scan_completed','message_pii_scan','message_read','attachment_pii_scan','attachment_scan_completed','audit_record_read','config_read_completed','policy_read_completed','ticket_read_completed','export_read_completed','identity_scan','record_lookup','restore_access','restore_authorization_completed','download_check','export_metadata_read_completed'))
             # Require recognizable authoritative read fields. Auxiliary resource logs do not establish state.
             is_read=is_read or (event.endswith(('_completed','_read','_heartbeat')) and any(k in fields for k in ('enabled','restore_allowed','pii_matches','direct_identifiers','download_available','rows','integrity_check')))
+            is_read=is_read or (event=='restore_candidate_evaluated' and 'deletion_block' in fields)
             if not is_read:continue
             merged={}
             if join in starts and 0<=(timestamp(at)-timestamp(starts[join][0])).total_seconds()<=600:
                 merged.update({k:v for k,v in starts[join][1].items() if k in IDENTITY_FIELDS})
             merged.update(fields)
             category=merged.get('record_type') or SYSTEM_CATEGORY.get(service,'')
+            # A contact lookup is a secondary identity index, even when hosted
+            # by analytics; it is not an aggregate analytics/telemetry profile.
+            if event=='contact_lookup_completed' and not merged.get('record_type'):category='SECONDARY_IDENTIFIER'
             if 'attachment' in event:category='SUPPORT_ATTACHMENT'
             if 'tombstone' in event:category='ACCOUNT_TOMBSTONE'
-            o=self.add(entry,merged,service,'',at,locator=f'line:{number}')
+            owning_system='support_platform' if service=='support_replica' else service
+            o=self.add(entry,merged,owning_system,'',at,locator=f'line:{number}')
             if o:
                 o.category=category;o.state=infer_state(category,merged)
                 if 'replica' in service:o.scope=fields.get('instance',service)

@@ -110,6 +110,8 @@ class Auditor:
             fact_time=re.search(r'(?:observed(?: at)?|captured(?: at)?|as of|generated|issued|executed)\s*[:=]?\s*('+ISO+')',text,re.I)
             times=re.findall(ISO,text)
             observed=fact_time[1] if fact_time else times[0] if times else ''
+            current_view=doc.get('kind')=='ocr' and bool(re.search(r'updated moments ago',normalized))
+            if not observed and current_view:observed=doc['captured_at']
             if not observed:
                 human=re.search(r'\b(\d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2}(?::\d{2})?)\s*UTC',normalized,re.I)
                 if human:
@@ -149,6 +151,36 @@ class Auditor:
                 row_fields=any(k in fields for k in ('email','phone','name','enabled','restore_allowed','rows','result','account_status','retention_until'))
                 panel_read=bool(re.search(r'raw document|customer details|profile attributes|message|conversation|archive path|file size|object properties|integrity seal|event reference|connector details|filename|file name',panel))
                 state=''
+                # A captured PDF is itself a copy of the linked export's data.
+                # Its presence is observed at capture, independently of order or
+                # issue dates mentioned inside the document.
+                statement_copy=(doc.get('kind')=='pdf' and category=='USER_EXPORT'
+                    and re.search(r'customer (?:statement|report)|account history',normalized)
+                    and re.search(r'\b(?:order|payment|delivery address)\b',normalized)
+                    and re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',normalized))
+                if not catalog_only and statement_copy:
+                    state='PRESENT';observed=doc['captured_at']
+                # Object-list rows carry filename, size and storage metadata;
+                # ownership comes from the independent catalog link above.
+                object_row=(doc.get('kind')=='ocr' and category=='SUPPORT_ATTACHMENT'
+                    and re.search(r'\bobjects?\b',normalized)
+                    and re.search(r'\b\d+(?:\.\d+)?\s*(?:kb|mb|gb|bytes)\b',panel)
+                    and re.search(r'\b(?:content type|encryption|storage class|version)\b',panel))
+                if not catalog_only and object_row:state='PRESENT'
+                # This adapter recognizes the visible schema of a retained
+                # reference row, not arbitrary missing fields in an extraction.
+                # A typed tombstone catalog link supplies its internal resource
+                # identity; the current registry shows only stable references.
+                reference_view=(doc.get('kind')=='ocr' and category=='ACCOUNT_TOMBSTONE'
+                    and all(label in normalized for label in ('customer reference registry','retained reference','customer key','linked records','overview'))
+                    and re.search(r'\blinked to customer\b',normalized))
+                if not catalog_only and reference_view:
+                    stable=subject.user_id if subject else next((d for d in descriptors if re.search(r'(?<![\w])'+re.escape(d.casefold())+r'(?![\w])',normalized)),None)
+                    if stable and '@' not in stable:
+                        fields.update(subject_reference=stable,account_status='DELETED_TOMBSTONE',retained_references=True,
+                            name=None,email=None,phone=None,email_hash=None,reference_view_schema=True)
+                        exposed=bool(re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}|\+\d[\d ()-]{6,}|\b(?:full name|customer name|email hash)\s*[:=]\s*\S+',normalized))
+                        state='PRESENT' if exposed else 'REDACTED'
                 if not catalog_only and (row_fields or panel_read):
                     if row_fields:state=infer_state(category,fields)
                     elif category in {'USER_PROFILE','SEARCH_INDEX_ENTRY','USER_EXPORT','MARKETING_PROFILE','SUPPORT_MESSAGE','SUPPORT_ATTACHMENT','ANALYTICS_PROFILE'} and re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',panel):state='PRESENT'
@@ -198,9 +230,11 @@ class Auditor:
             negative=explicit is False or _positive_text_evidence(r'\b(?:no shared context|private message|no order (?:context|exists)|agent was not involved)\b',text)
             if positive and negative:return None
             if positive:return rule['required_action']
-            # The request is to delete. REDACT is a conditional preservation
-            # exception; without its positive context, remove the message.
-            return 'DELETE'
+            if negative:return 'DELETE'
+            # Missing shared-context metadata is not authorization to destroy
+            # conversation history. Preserve it while removing subject PII;
+            # an explicit private/nonshared predicate still requires deletion.
+            return rule['required_action']
         elif category=='SUPPORT_ATTACHMENT' and 'belongs only' in condition:
             exclusive=truth(fields.get('exclusive_subject'))
             text_proof=_positive_text_evidence(r'\bbelongs only to (?:the )?(?:deletion )?subject\b|\bno other subject is linked\b|\bexclusive(?:ly)? assigned to (?:the )?(?:deletion )?subject\b',text)
@@ -228,8 +262,12 @@ class Auditor:
             if start and until and timestamp(start)>timestamp(until):return None
             if start and timestamp(start)>timestamp(cutoff):return 'DELETE'
             if until and timestamp(cutoff)>timestamp(until):return 'DELETE'
-            established=bool(until and timestamp(cutoff)<=timestamp(until) and (not start or timestamp(start)<=timestamp(cutoff)))
-            return rule['required_action'] if established else 'DELETE'
+            active=truth(fields.get('retention_active'))
+            if active is False:return 'DELETE'
+            # Supplied security records belong to the retention class. Do not
+            # invent an expiry from missing metadata and destroy them. Explicit
+            # interval/active predicates above can establish expiry instead.
+            return rule['required_action'] if observation.state!='ABSENT' else 'DELETE'
         elif category=='LEGAL_HOLD_RECORD' and 'legal hold' in condition:
             until=fields.get('retained_until',fields.get('hold_until'));start=fields.get('hold_from')
             active=truth(fields.get('legal_hold_active',fields.get('hold_active')))
@@ -253,7 +291,9 @@ class Auditor:
             established=str(fields.get('account_status','')).upper() in {'DELETED','DELETED_TOMBSTONE'} and stable and references
             if not established:return 'DELETE'
         elif category=='BACKUP_ARCHIVE' and ('restore' in condition):
-            if observation.state=='BLOCKED' or truth(fields.get('restore_block_supported')) is True:return 'BLOCK'
+            supported=truth(fields.get('restore_block_supported'))
+            if supported is False:return 'DELETE'
+            if observation.state in {'ACTIVE','BLOCKED'} or supported is True:return 'BLOCK'
             return 'DELETE'
         return rule['required_action'] if established else None
 
@@ -300,12 +340,21 @@ class Auditor:
         for key,observations in grouped.items():
             latest[key]=max(observations,key=lambda o:(timestamp(o.observed_at),timestamp(o.available_at),o.evidence_id))
         obligations=defaultdict(list)
+        retained_references=defaultdict(set)
+        for (_,resource,category,_),read in latest.items():
+            if category in {'SECURITY_AUDIT_LOG','LEGAL_HOLD_RECORD'} and read.state!='ABSENT' and self._action(category,read,cutoff)=='RETAIN':
+                for owner in self.identity.explicit_owners(read):retained_references[owner].add(resource)
         for (system,resource,category,scope),o in latest.items():
             policy_fields={};policy_sources=[]
             for fact in sorted(self.store.by_resource[resource],key=lambda x:timestamp(x.observed_at)):
                 if fact.eligible(cutoff) and fact.assertion in {'read','catalog'} and (not self.identity.explicit_owners(fact) or self.identity.belongs(fact,subject,cutoff)):
                     policy_fields.update(fact.fields);policy_sources.append(fact.evidence_id)
             policy_fields.update(o.fields)
+            if category=='ACCOUNT_TOMBSTONE':
+                stable=next((policy_fields.get(k) for k in ('user_id','subject_reference','customer_reference') if normalize(policy_fields.get(k)) not in NULLS),None)
+                linked=retained_references.get(normalize(stable),set())
+                if linked and 'retained_references' not in policy_fields and 'retained_record_ids' not in policy_fields:
+                    policy_fields['retained_record_ids']=sorted(linked)
             action=self._action(category,replace(o,fields=policy_fields),cutoff)
             if action==NO_OBLIGATION:continue
             if not action:

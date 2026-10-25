@@ -299,3 +299,31 @@ def test_verification_only_request_is_not_a_new_deletion_request(tmp_path):
         "reason": "incorrectly treated as a deletion request",
     }))
     assert agent.authorize(text) is False
+
+
+@pytest.mark.parametrize('verb', ['removing', 'deleting', 'erasing'])
+def test_correction_without_deletion_vetoes_model_positive(tmp_path, verb):
+    text = f'Can you correct my surname without {verb} any of my records?'
+    agent = LocalSemanticAgent(cache_dir=tmp_path, transport=transport({
+        'authorize_deletion': True, 'quote': text, 'reason': 'incorrect model guess',
+    }))
+    assert agent.authorize(text) is False
+
+
+def test_audit_request_explicitly_requires_remaining_records_to_be_unidentifiable(tmp_path):
+    text = 'Please check the latest state and confirm the profile is gone and remaining records cannot identify me.'
+    agent = LocalSemanticAgent(cache_dir=tmp_path, transport=transport({
+        'authorize_deletion': False, 'quote': text, 'reason': 'verification',
+    }))
+    assert agent.authorize(text) is True
+
+
+@pytest.mark.parametrize('text', [
+    'Please delete my account without removing legally retained order records.',
+    'Please delete my account, but do not remove invoices retained for tax purposes.',
+])
+def test_preserving_required_records_does_not_negate_account_deletion(tmp_path, text):
+    agent = LocalSemanticAgent(cache_dir=tmp_path, transport=transport({
+        'authorize_deletion': True, 'quote': text, 'reason': 'delete subject to retention',
+    }))
+    assert agent.authorize(text) is True
